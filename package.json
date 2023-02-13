@@ -1,0 +1,41 @@
+{
+  "name": "swr-micro",
+  "version": "0.0.1",
+  "description": "React hooks for Data fetching",
+  "main": "dist/index.js",
+  "scripts": {
+    "compile": "tsc"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/atomic-state/http-react"
+  },
+  "keywords": [
+    "swr",
+    "request deduplication",
+    "http",
+    "api",
+    "react http",
+    "fetching hook",
+    "use fetch",
+    "http request",
+    "fetching utilities",
+    "cache",
+    "suspense",
+    "pagination",
+    "optimistic-ui"
+  ],
+  "author": "Dany Beltran",
+  "license": "MIT",
+  "dependencies": {
+    "atomic-state": "^2.3.1"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.13.0",
+    "@types/react": "^18.0.28",
+    "typescript": "^4.9.5"
+  }
+}
