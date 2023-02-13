@@ -42,6 +42,7 @@ export default function Page() {
 
 ### Features available in this WIP:
 
+- Pagination
 - Request deduplication
 - Data dependency
 - Local mutation for optimistic UI
