@@ -1,28 +1,25 @@
-/**
- * @license swr-micro
- * Copyright (c) Dany Beltran
- *
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
- */
-
 import { Atom, atom, useAtom } from 'atomic-state'
 import { useEffect, useLayoutEffect } from 'react'
 
 // type
 type RequestStatus<DataType = any> = {
-  data: any
+  data: DataType
+  loading: boolean
+  error: boolean
+  revalidating: boolean
   start: Date
-  currentRequest: undefined
-  loading: any
-  error: false
-  revalidating: false
+  end: Date | null
+  status: number | null
+  success: boolean
+  responseTime: number | null
+  key: any
 }
 type RequestActions<R> = {
   initializeRevalidation: {
     revalidation?: boolean
     $config: any
     forced?: boolean
+    refreshing?: boolean
   }
   mutate: R
 }
@@ -34,6 +31,8 @@ const previousConfigs = new Map<string, any>()
 
 const initialized = new Map<string, boolean>()
 const withSuspense = new Map<string, Response>()
+
+const abortControllers = new Map<string, AbortController>()
 
 // per-config cache
 const cached = new Map<string, any>()
@@ -123,7 +122,7 @@ export function setURLParams(str: string = '', $params: any = {}) {
   )
 }
 
-function setUpSWR(url, config) {
+function setUpSWR(url, config: any = {}) {
   const key = config?.key || [config?.method || 'GET', url].join(' ')
 
   const keyStr = JSON.stringify(key)
@@ -144,6 +143,11 @@ function setUpSWR(url, config) {
             currentRequest: undefined,
             loading: config?.auto ?? true,
             error: false,
+            end: null,
+            status: null,
+            success: false,
+            responseTime: null,
+            key: undefined,
             revalidating: false
           },
           actions: {
@@ -162,15 +166,19 @@ function setUpSWR(url, config) {
                 previousConfigs.set(keyStr, JSON.stringify($config))
                 initialized.set(keyStr, true)
                 if (!state.loading) {
-                  dispatch(
-                    dispatchTypes.firstLoad({
-                      data: cached.get(JSON.stringify($config)) ?? state.data,
+                  dispatch(prev => ({
+                    ...prev,
+                    ...dispatchTypes.firstLoad({
+                      data: cached.get(JSON.stringify($config)) ?? prev.data,
                       start: new Date()
-                    })
-                  )
+                    })(prev)
+                  }))
                   started.set(keyStr, Date.now())
                 }
                 try {
+                  abortControllers.get(keyStr)?.abort()
+                  const abortController = new AbortController()
+                  abortControllers.set(keyStr, abortController)
                   const res = await fetcher(
                     setURLParams(
                       url +
@@ -182,7 +190,11 @@ function setUpSWR(url, config) {
                         thisQuery,
                       $config?.params || {}
                     ),
-                    { ...$config, params: undefined }
+                    {
+                      ...$config,
+                      params: undefined,
+                      signal: abortController.signal
+                    }
                   )
 
                   const d = res.data ?? (await res.json())
@@ -207,13 +219,16 @@ function setUpSWR(url, config) {
                     })
                   }
                 } catch (err) {
-                  newState = dispatchTypes.flagError({
-                    data: state.data,
-                    end: new Date(),
-                    status: err?.response?.status,
-                    responseTime: Date.now() - (started.get(keyStr) || 0),
-                    success: false
-                  })
+                  if (!/abort/.test(err.toString())) {
+                    newState = prev =>
+                      dispatchTypes.flagError({
+                        data: prev.data,
+                        end: new Date(),
+                        status: err?.response?.status,
+                        responseTime: Date.now() - (started.get(keyStr) || 0),
+                        success: false
+                      })
+                  }
                 } finally {
                   dispatch(newState)
                   withSuspense.delete(keyStr)
@@ -238,7 +253,18 @@ function setUpSWR(url, config) {
 const useIsomorphicLayoutEffect =
   typeof window === 'undefined' ? useEffect : useLayoutEffect
 
-function useSWR<T = any>(url, config) {
+function useSWR<T = any>(
+  url,
+  config: RequestInit & {
+    key?: any
+    query?: any
+    params?: any
+    default?: T
+    suspense?: boolean
+    auto?: boolean
+    fetcher?: (url: string, cfg: any) => any
+  } = {}
+) {
   const key = setUpSWR(url, config)
 
   const [swr, , swrActions] = useAtom<RequestStatus<T>, RequestActions<T>>(
@@ -258,7 +284,7 @@ function useSWR<T = any>(url, config) {
 
   return {
     ...swr,
-    key,
+    key: JSON.parse(key),
     revalidate: () =>
       swrActions.initializeRevalidation({
         revalidation: true,
