@@ -8,10 +8,10 @@ type RequestStatus<DataType = any> = {
   error: boolean
   revalidating: boolean
   start: Date
-  end: Date
-  status: number
+  end: Date | null
+  status: number | null
   success: boolean
-  responseTime: number
+  responseTime: number | null
   key: any
 }
 type RequestActions<R> = {
