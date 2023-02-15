@@ -1,7 +1,7 @@
 import { Atom, atom, useAtom } from 'atomic-state'
 import { useEffect, useLayoutEffect } from 'react'
 
-// type
+// types
 type RequestStatus<DataType = any> = {
   data: DataType
   loading: boolean
@@ -25,12 +25,19 @@ type RequestActions<R> = {
 }
 type RequestAtom<T> = Atom<RequestStatus<T>, RequestActions<T>>
 
+type TimeSpan =
+  | number
+  | `${string} ${'ms' | 'sec' | 'min' | 'h' | 'd' | 'we' | 'mo' | 'y'}`
+
 // constants
 const requests = new Map<string, RequestAtom<any>>()
 const previousConfigs = new Map<string, any>()
 
 const initialized = new Map<string, boolean>()
 const withSuspense = new Map<string, Response>()
+
+// For running requests
+const runningRequests = new Map<string, boolean>()
 
 const abortControllers = new Map<string, AbortController>()
 
@@ -39,6 +46,9 @@ const cached = new Map<string, any>()
 
 // For response times
 const started = new Map<string, number>()
+
+// For error retry
+const completedAttempts = new Map<string, number>()
 
 const dispatchTypes = {
   firstLoad: other => prev => ({
@@ -71,6 +81,35 @@ const dispatchTypes = {
   })
 }
 
+function serialize(input) {
+  return JSON.stringify(input)
+}
+
+function getMiliseconds(v: TimeSpan): number {
+  const UNITS_MILISECONDS_EQUIVALENTS = {
+    ms: 1,
+    sec: 1000,
+    min: 60000,
+    h: 3600000,
+    d: 86400000,
+    we: 604800000,
+    mo: 2629800000,
+    y: 31536000000
+  }
+
+  if (typeof v === 'number') return v
+
+  const [amount, unit] = (v as string).split(' ')
+
+  const amountNumber = parseFloat(amount)
+
+  if (!(unit in UNITS_MILISECONDS_EQUIVALENTS)) {
+    return amountNumber
+  }
+  // @ts-ignore - This should return the value in miliseconds
+  return amountNumber * UNITS_MILISECONDS_EQUIVALENTS[unit]
+}
+
 /**
  *
  * @param str The target string
@@ -80,7 +119,7 @@ const dispatchTypes = {
  *
  * URL search params will not be affected
  */
-export function setURLParams(str: string = '', $params: any = {}) {
+function setURLParams(str: string = '', $params: any = {}) {
   const hasQuery = str.includes('?')
 
   const queryString =
@@ -122,7 +161,7 @@ export function setURLParams(str: string = '', $params: any = {}) {
   )
 }
 
-function setUpSWR(url, config: any = {}) {
+function useSetupSWR(url: string, config: any = {}) {
   const key = config?.key || [config?.method || 'GET', url].join(' ')
 
   const keyStr = JSON.stringify(key)
@@ -163,6 +202,9 @@ function setUpSWR(url, config: any = {}) {
                     : previousConfigs.get(keyStr) !== JSON.stringify($config)
                   : !initialized.get(keyStr) && startRevalidation
               ) {
+                if (previousConfigs.get(keyStr) !== JSON.stringify($config)) {
+                  completedAttempts.set(keyStr, 0)
+                }
                 previousConfigs.set(keyStr, JSON.stringify($config))
                 initialized.set(keyStr, true)
                 if (!state.loading) {
@@ -173,12 +215,18 @@ function setUpSWR(url, config: any = {}) {
                       start: new Date()
                     })(prev)
                   }))
+                  runningRequests.set(keyStr, true)
                   started.set(keyStr, Date.now())
                 }
                 try {
                   abortControllers.get(keyStr)?.abort()
                   const abortController = new AbortController()
                   abortControllers.set(keyStr, abortController)
+
+                  const newHeaders = {
+                    'Content-type': 'application/json',
+                    ...$config?.headers
+                  }
                   const res = await fetcher(
                     setURLParams(
                       url +
@@ -192,6 +240,11 @@ function setUpSWR(url, config: any = {}) {
                     ),
                     {
                       ...$config,
+                      headers: newHeaders,
+                      body:
+                        newHeaders['Content-type'] !== 'application/json'
+                          ? $config?.body
+                          : serialize($config?.body),
                       params: undefined,
                       signal: abortController.signal
                     }
@@ -202,6 +255,8 @@ function setUpSWR(url, config: any = {}) {
                   cached.set(JSON.stringify($config), d)
 
                   if (res.status >= 400) {
+                    const previousAttempts = completedAttempts.get(keyStr) || 0
+                    completedAttempts.set(keyStr, previousAttempts + 1)
                     newState = dispatchTypes.flagError({
                       data: d,
                       end: new Date(),
@@ -210,6 +265,7 @@ function setUpSWR(url, config: any = {}) {
                       success: false
                     })
                   } else {
+                    completedAttempts.set(keyStr, 0)
                     newState = dispatchTypes.success({
                       data: d,
                       end: new Date(),
@@ -220,6 +276,8 @@ function setUpSWR(url, config: any = {}) {
                   }
                 } catch (err) {
                   if (!/abort/.test(err.toString())) {
+                    const previousAttempts = completedAttempts.get(keyStr) || 0
+                    completedAttempts.set(keyStr, previousAttempts + 1)
                     newState = prev =>
                       dispatchTypes.flagError({
                         data: prev.data,
@@ -231,6 +289,7 @@ function setUpSWR(url, config: any = {}) {
                   }
                 } finally {
                   dispatch(newState)
+                  runningRequests.delete(keyStr)
                   withSuspense.delete(keyStr)
                 }
               }
@@ -254,18 +313,26 @@ const useIsomorphicLayoutEffect =
   typeof window === 'undefined' ? useEffect : useLayoutEffect
 
 function useSWR<T = any>(
-  url,
-  config: RequestInit & {
+  url: string,
+  config: Omit<RequestInit, 'body'> & {
+    body?: any
     key?: any
     query?: any
     params?: any
     default?: T
     suspense?: boolean
     auto?: boolean
+    revalidateInterval?: TimeSpan
     fetcher?: (url: string, cfg: any) => any
+    revalidateOnFocus?: boolean
+    revalidateOnReconnect?: boolean
+    onStart?: (req: any) => void
+    onEnd?: (res: any) => void
+    attempts?: number
+    attemptInterval?: TimeSpan
   } = {}
 ) {
-  const key = setUpSWR(url, config)
+  const key = useSetupSWR(url, config)
 
   const [swr, , swrActions] = useAtom<RequestStatus<T>, RequestActions<T>>(
     requests.get(key) as any
@@ -278,21 +345,115 @@ function useSWR<T = any>(
   }
 
   useIsomorphicLayoutEffect(() => {
-    if (config?.auto ?? true)
-      swrActions.initializeRevalidation({ revalidation: true, $config: config })
+    if (url) {
+      if (config?.auto ?? true)
+        swrActions.initializeRevalidation({
+          revalidation: true,
+          $config: config
+        })
+    }
   }, [JSON.stringify(config)])
+
+  useIsomorphicLayoutEffect(() => {
+    if (config.auto && url) {
+      if (config?.revalidateInterval) {
+        const interval = getMiliseconds(config.revalidateInterval)
+        if (interval) {
+          const refreshTm = setInterval(() => {
+            if (!runningRequests.get(key)) {
+              swrActions.initializeRevalidation({
+                revalidation: true,
+                $config: config,
+                forced: true
+              })
+            }
+          }, interval)
+          return () => {
+            clearInterval(refreshTm)
+          }
+        }
+      }
+    }
+    return () => {}
+  }, [JSON.stringify({ config, swr })])
+
+  useIsomorphicLayoutEffect(() => {
+    if (config.auto && url) {
+      if (swr.error && !config?.revalidateInterval) {
+        const { attempts = 3, attemptInterval = '2 sec' } = config
+        if (attempts > 0) {
+          // @ts-ignore
+          if (completedAttempts.get(key) < attempts) {
+            const errorInterval = getMiliseconds(attemptInterval)
+            if (errorInterval) {
+              const refreshTm = setTimeout(() => {
+                if (!runningRequests.get(key)) {
+                  swrActions.initializeRevalidation({
+                    revalidation: true,
+                    $config: config,
+                    forced: true
+                  })
+                }
+              }, errorInterval)
+              return () => {
+                clearTimeout(refreshTm)
+              }
+            }
+          }
+        }
+      }
+    }
+    return () => {}
+  }, [JSON.stringify({ config, swr })])
+
+  useIsomorphicLayoutEffect(() => {
+    if (typeof window !== 'undefined') {
+      if ('addEventListener' in window) {
+        const focusListener = () => {
+          if (!runningRequests.get(key)) {
+            swrActions.initializeRevalidation({
+              revalidation: true,
+              $config: config,
+              forced: true
+            })
+          }
+        }
+        if (config?.revalidateOnFocus) {
+          window.addEventListener('focus', focusListener)
+        }
+        if (config.revalidateOnReconnect) {
+          window.addEventListener('online', focusListener)
+        }
+        return () => {
+          window.removeEventListener('focus', focusListener)
+          window.removeEventListener('online', focusListener)
+        }
+      }
+    }
+    return () => {}
+  }, [serialize({ config, swr })])
 
   return {
     ...swr,
     key: JSON.parse(key),
-    revalidate: () =>
+    revalidate: () => {
+      completedAttempts.set(key, 0)
       swrActions.initializeRevalidation({
         revalidation: true,
         $config: config,
         forced: true
-      }),
+      })
+    },
+    cancelRequest: () => {
+      completedAttempts.set(key, 0)
+      abortControllers.get(key)?.abort()
+    },
     mutate: swrActions.mutate
   }
+}
+
+export function useSWRKey(key?: any) {
+  return useSWR('', { key })
 }
 
 export default useSWR

@@ -1,11 +1,13 @@
 ### swr-micro
 
-(WIP) A lightweight SWR implementation using `atomic-state`
+A lightweight SWR implementation using `atomic-state`
 
 
 Example code
 ```tsx
 import useSWR from 'swr-micro'
+
+const fetcher = (url, config) => fetch(url, config)
 
 export default function Page() {
   const [page, setPage] = useState(1)
@@ -40,7 +42,7 @@ export default function Page() {
 ```
 > Note that `revalidating` will not be true during the first revalidation
 
-### Features available in this WIP:
+### Features:
 
 - Pagination
 - Request deduplication
@@ -49,4 +51,6 @@ export default function Page() {
 - Suspense
 - Custom fetcher (e.g. `axios`, `fetch`)
 - Search params
-
+- Revalidate with interval
+- Error-retry
+- Retry on reconnect
