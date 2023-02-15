@@ -161,7 +161,7 @@ function setURLParams(str: string = '', $params: any = {}) {
   )
 }
 
-function useSetupSWR(url: string, config: any = {}) {
+function setupSWR(url: string, config: any = {}) {
   const key = config?.key || [config?.method || 'GET', url].join(' ')
 
   const keyStr = JSON.stringify(key)
@@ -332,30 +332,34 @@ function useSWR<T = any>(
     attemptInterval?: TimeSpan
   } = {}
 ) {
-  const key = useSetupSWR(url, config)
+  const { auto = true } = config
+
+  const key = url ? setupSWR(url, config) : serialize(config.key)
 
   const [swr, , swrActions] = useAtom<RequestStatus<T>, RequestActions<T>>(
     requests.get(key) as any
   )
 
-  if (config?.suspense && swr.loading && !initialized.get(key)) {
+  if (url && auto && config?.suspense && swr.loading && !initialized.get(key)) {
     throw swrActions.initializeRevalidation({ $config: config })
   } else {
-    swrActions.initializeRevalidation({ $config: config })
+    if (auto && url) {
+      swrActions.initializeRevalidation({ $config: config })
+    }
   }
 
   useIsomorphicLayoutEffect(() => {
     if (url) {
-      if (config?.auto ?? true)
+      if (auto)
         swrActions.initializeRevalidation({
           revalidation: true,
           $config: config
         })
     }
-  }, [JSON.stringify(config)])
+  }, [serialize({ config, auto, url })])
 
   useIsomorphicLayoutEffect(() => {
-    if (config.auto && url) {
+    if (auto && url) {
       if (config?.revalidateInterval) {
         const interval = getMiliseconds(config.revalidateInterval)
         if (interval) {
@@ -375,7 +379,7 @@ function useSWR<T = any>(
       }
     }
     return () => {}
-  }, [JSON.stringify({ config, swr })])
+  }, [serialize({ config, auto, url, swr })])
 
   useIsomorphicLayoutEffect(() => {
     if (config.auto && url) {
@@ -404,34 +408,36 @@ function useSWR<T = any>(
       }
     }
     return () => {}
-  }, [JSON.stringify({ config, swr })])
+  }, [serialize({ config, auto, url, swr })])
 
   useIsomorphicLayoutEffect(() => {
-    if (typeof window !== 'undefined') {
-      if ('addEventListener' in window) {
-        const focusListener = () => {
-          if (!runningRequests.get(key)) {
-            swrActions.initializeRevalidation({
-              revalidation: true,
-              $config: config,
-              forced: true
-            })
+    if (config.auto && url) {
+      if (typeof window !== 'undefined') {
+        if ('addEventListener' in window) {
+          const focusListener = () => {
+            if (!runningRequests.get(key)) {
+              swrActions.initializeRevalidation({
+                revalidation: true,
+                $config: config,
+                forced: true
+              })
+            }
           }
-        }
-        if (config?.revalidateOnFocus) {
-          window.addEventListener('focus', focusListener)
-        }
-        if (config.revalidateOnReconnect) {
-          window.addEventListener('online', focusListener)
-        }
-        return () => {
-          window.removeEventListener('focus', focusListener)
-          window.removeEventListener('online', focusListener)
+          if (config?.revalidateOnFocus) {
+            window.addEventListener('focus', focusListener)
+          }
+          if (config.revalidateOnReconnect) {
+            window.addEventListener('online', focusListener)
+          }
+          return () => {
+            window.removeEventListener('focus', focusListener)
+            window.removeEventListener('online', focusListener)
+          }
         }
       }
     }
     return () => {}
-  }, [serialize({ config, swr })])
+  }, [serialize({ config, auto, url, swr })])
 
   return {
     ...swr,
