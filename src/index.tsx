@@ -34,7 +34,7 @@ const requests = new Map<string, RequestAtom<any>>()
 const previousConfigs = new Map<string, any>()
 
 const initialized = new Map<string, boolean>()
-const withSuspense = new Map<string, Response>()
+const suspended = new Map<string, boolean>()
 
 // For running requests
 const runningRequests = new Map<string, boolean>()
@@ -164,8 +164,8 @@ function setURLParams(str: string = '', $params: any = {}) {
 function setupSWR(url: string, config: any = {}) {
   const key = config?.key || [config?.method || 'GET', url].join(' ')
 
-  const keyStr = JSON.stringify(key)
-  if (previousConfigs.get(keyStr) !== JSON.stringify(config)) {
+  const keyStr = serialize(key)
+  if (previousConfigs.get(keyStr) !== serialize(config)) {
     if (true) {
       const { query = {} } = config || {}
       const thisQuery = Object.keys(query)
@@ -199,19 +199,19 @@ function setupSWR(url: string, config: any = {}) {
                 args?.revalidation
                   ? args?.forced
                     ? true
-                    : previousConfigs.get(keyStr) !== JSON.stringify($config)
+                    : previousConfigs.get(keyStr) !== serialize($config)
                   : !initialized.get(keyStr) && startRevalidation
               ) {
-                if (previousConfigs.get(keyStr) !== JSON.stringify($config)) {
+                if (previousConfigs.get(keyStr) !== serialize($config)) {
                   completedAttempts.set(keyStr, 0)
                 }
-                previousConfigs.set(keyStr, JSON.stringify($config))
+                previousConfigs.set(keyStr, serialize($config))
                 initialized.set(keyStr, true)
                 if (!state.loading) {
                   dispatch(prev => ({
                     ...prev,
                     ...dispatchTypes.firstLoad({
-                      data: cached.get(JSON.stringify($config)) ?? prev.data,
+                      data: cached.get(serialize($config)) ?? prev.data,
                       start: new Date()
                     })(prev)
                   }))
@@ -252,7 +252,9 @@ function setupSWR(url: string, config: any = {}) {
 
                   const d = res.data ?? (await res.json())
 
-                  cached.set(JSON.stringify($config), d)
+                  const cachedKey = serialize({ key: keyStr, config: $config })
+
+                  cached.set(cachedKey, d)
 
                   if (res.status >= 400) {
                     const previousAttempts = completedAttempts.get(keyStr) || 0
@@ -290,7 +292,7 @@ function setupSWR(url: string, config: any = {}) {
                 } finally {
                   dispatch(newState)
                   runningRequests.delete(keyStr)
-                  withSuspense.delete(keyStr)
+                  suspended.set(keyStr, true)
                 }
               }
               return state
@@ -340,7 +342,7 @@ function useSWR<T = any>(
     requests.get(key) as any
   )
 
-  if (url && auto && config?.suspense && swr.loading && !initialized.get(key)) {
+  if (url && auto && config.suspense && swr.loading && !suspended.get(key)) {
     throw swrActions.initializeRevalidation({ $config: config })
   } else {
     if (auto && url) {
@@ -349,12 +351,14 @@ function useSWR<T = any>(
   }
 
   useIsomorphicLayoutEffect(() => {
-    if (url) {
-      if (auto)
-        swrActions.initializeRevalidation({
-          revalidation: true,
-          $config: config
-        })
+    if (initialized.get(key)) {
+      if (url) {
+        if (auto)
+          swrActions.initializeRevalidation({
+            revalidation: true,
+            $config: config
+          })
+      }
     }
   }, [serialize({ config, auto, url })])
 
@@ -441,6 +445,7 @@ function useSWR<T = any>(
 
   return {
     ...swr,
+    data: swr.data ?? cached.get(serialize({ key, config })),
     key: JSON.parse(key),
     revalidate: () => {
       completedAttempts.set(key, 0)
