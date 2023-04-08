@@ -312,26 +312,44 @@ function setupSWR(url: string, config: any = {}) {
 const useIsomorphicLayoutEffect =
   typeof window === 'undefined' ? useEffect : useLayoutEffect
 
-function useSWR<T = any>(
+type CfType<_T> = Omit<RequestInit, 'body'> & {
+  body?: any
+  key?: any
+  query?: any
+  params?: any
+  default?: _T
+  suspense?: boolean
+  auto?: boolean
+  revalidateInterval?: TimeSpan
+  fetcher?: (url: string, cfg: any) => any
+  revalidateOnFocus?: boolean
+  revalidateOnReconnect?: boolean
+  onStart?: (req: any) => void
+  onEnd?: (res: any) => void
+  attempts?: number
+  attemptInterval?: TimeSpan
+}
+
+export type RequestFn = <T = any>(
   url: string,
-  config: Omit<RequestInit, 'body'> & {
-    body?: any
-    key?: any
-    query?: any
-    params?: any
-    default?: T
-    suspense?: boolean
-    auto?: boolean
-    revalidateInterval?: TimeSpan
-    fetcher?: (url: string, cfg: any) => any
-    revalidateOnFocus?: boolean
-    revalidateOnReconnect?: boolean
-    onStart?: (req: any) => void
-    onEnd?: (res: any) => void
-    attempts?: number
-    attemptInterval?: TimeSpan
-  } = {}
-) {
+  config?: CfType<T>
+) => {
+  key: any
+  revalidate: () => void
+  cancelRequest: () => void
+  mutate: <Returns = any>(args?: T) => Returns
+  data: T
+  loading: boolean
+  error: boolean
+  revalidating: boolean
+  start: Date
+  end: Date
+  status: number
+  success: boolean
+  responseTime: number
+}
+
+function useSWR<T = any>(url: string, config: CfType<T> = {}) {
   const { auto = true } = config
 
   const key = url ? setupSWR(url, config) : serialize(config.key)

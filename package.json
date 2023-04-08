@@ -1,6 +1,6 @@
 {
   "name": "swr-micro",
-  "version": "0.0.9",
+  "version": "0.1.1",
   "description": "React hooks for Data fetching",
   "main": "dist/index.js",
   "scripts": {
