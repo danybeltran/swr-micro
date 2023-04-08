@@ -34,7 +34,7 @@ const requests = new Map<string, RequestAtom<any>>()
 const previousConfigs = new Map<string, any>()
 
 const initialized = new Map<string, boolean>()
-const suspended = new Map<string, boolean>()
+const withSuspense = new Map<string, Response>()
 
 // For running requests
 const runningRequests = new Map<string, boolean>()
@@ -164,8 +164,8 @@ function setURLParams(str: string = '', $params: any = {}) {
 function setupSWR(url: string, config: any = {}) {
   const key = config?.key || [config?.method || 'GET', url].join(' ')
 
-  const keyStr = serialize(key)
-  if (previousConfigs.get(keyStr) !== serialize(config)) {
+  const keyStr = JSON.stringify(key)
+  if (previousConfigs.get(keyStr) !== JSON.stringify(config)) {
     if (true) {
       const { query = {} } = config || {}
       const thisQuery = Object.keys(query)
@@ -199,19 +199,19 @@ function setupSWR(url: string, config: any = {}) {
                 args?.revalidation
                   ? args?.forced
                     ? true
-                    : previousConfigs.get(keyStr) !== serialize($config)
+                    : previousConfigs.get(keyStr) !== JSON.stringify($config)
                   : !initialized.get(keyStr) && startRevalidation
               ) {
-                if (previousConfigs.get(keyStr) !== serialize($config)) {
+                if (previousConfigs.get(keyStr) !== JSON.stringify($config)) {
                   completedAttempts.set(keyStr, 0)
                 }
-                previousConfigs.set(keyStr, serialize($config))
+                previousConfigs.set(keyStr, JSON.stringify($config))
                 initialized.set(keyStr, true)
                 if (!state.loading) {
                   dispatch(prev => ({
                     ...prev,
                     ...dispatchTypes.firstLoad({
-                      data: cached.get(serialize($config)) ?? prev.data,
+                      data: cached.get(JSON.stringify($config)) ?? prev.data,
                       start: new Date()
                     })(prev)
                   }))
@@ -252,9 +252,7 @@ function setupSWR(url: string, config: any = {}) {
 
                   const d = res.data ?? (await res.json())
 
-                  const cachedKey = serialize({ key: keyStr, config: $config })
-
-                  cached.set(cachedKey, d)
+                  cached.set(JSON.stringify($config), d)
 
                   if (res.status >= 400) {
                     const previousAttempts = completedAttempts.get(keyStr) || 0
@@ -292,7 +290,7 @@ function setupSWR(url: string, config: any = {}) {
                 } finally {
                   dispatch(newState)
                   runningRequests.delete(keyStr)
-                  suspended.set(keyStr, true)
+                  withSuspense.delete(keyStr)
                 }
               }
               return state
@@ -314,26 +312,44 @@ function setupSWR(url: string, config: any = {}) {
 const useIsomorphicLayoutEffect =
   typeof window === 'undefined' ? useEffect : useLayoutEffect
 
-function useSWR<T = any>(
+type CfType<_T> = Omit<RequestInit, 'body'> & {
+  body?: any
+  key?: any
+  query?: any
+  params?: any
+  default?: _T
+  suspense?: boolean
+  auto?: boolean
+  revalidateInterval?: TimeSpan
+  fetcher?: (url: string, cfg: any) => any
+  revalidateOnFocus?: boolean
+  revalidateOnReconnect?: boolean
+  onStart?: (req: any) => void
+  onEnd?: (res: any) => void
+  attempts?: number
+  attemptInterval?: TimeSpan
+}
+
+export type RequestFn = <T = any>(
   url: string,
-  config: Omit<RequestInit, 'body'> & {
-    body?: any
-    key?: any
-    query?: any
-    params?: any
-    default?: T
-    suspense?: boolean
-    auto?: boolean
-    revalidateInterval?: TimeSpan
-    fetcher?: (url: string, cfg: any) => any
-    revalidateOnFocus?: boolean
-    revalidateOnReconnect?: boolean
-    onStart?: (req: any) => void
-    onEnd?: (res: any) => void
-    attempts?: number
-    attemptInterval?: TimeSpan
-  } = {}
-) {
+  config?: CfType<T>
+) => {
+  key: any
+  revalidate: () => void
+  cancelRequest: () => void
+  mutate: <Returns = any>(args?: T) => Returns
+  data: T
+  loading: boolean
+  error: boolean
+  revalidating: boolean
+  start: Date
+  end: Date
+  status: number
+  success: boolean
+  responseTime: number
+}
+
+function useSWR<T = any>(url: string, config: CfType<T> = {}) {
   const { auto = true } = config
 
   const key = url ? setupSWR(url, config) : serialize(config.key)
@@ -342,7 +358,7 @@ function useSWR<T = any>(
     requests.get(key) as any
   )
 
-  if (url && auto && config.suspense && swr.loading && !suspended.get(key)) {
+  if (url && auto && config?.suspense && swr.loading && !initialized.get(key)) {
     throw swrActions.initializeRevalidation({ $config: config })
   } else {
     if (auto && url) {
@@ -351,14 +367,12 @@ function useSWR<T = any>(
   }
 
   useIsomorphicLayoutEffect(() => {
-    if (initialized.get(key)) {
-      if (url) {
-        if (auto)
-          swrActions.initializeRevalidation({
-            revalidation: true,
-            $config: config
-          })
-      }
+    if (url) {
+      if (auto)
+        swrActions.initializeRevalidation({
+          revalidation: true,
+          $config: config
+        })
     }
   }, [serialize({ config, auto, url })])
 
@@ -445,7 +459,6 @@ function useSWR<T = any>(
 
   return {
     ...swr,
-    data: swr.data ?? cached.get(serialize({ key, config })),
     key: JSON.parse(key),
     revalidate: () => {
       completedAttempts.set(key, 0)
